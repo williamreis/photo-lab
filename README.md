@@ -14,6 +14,7 @@ Aplicação web para **análise automática de pele** e **laudo técnico de reto
 - [Configuração](#configuração)
 - [Execução](#execução)
 - [Arquitetura](#arquitetura)
+- [IA (Model/LLM)](#ia-modelllm)
 - [API](#api)
 - [Estrutura do projeto](#estrutura-do-projeto)
 - [Variáveis de ambiente](#variáveis-de-ambiente)
@@ -153,6 +154,51 @@ Serviços: `redis`, `api`, `worker`, `frontend`. O worker processa os jobs de an
 - A **API** persiste o arquivo, enfileira um job no Redis e devolve `job_id` e `history_id`.
 - O **worker** executa o job: chama o agente (OpenRouter) para o laudo e o Fal AI (Moondream) para os pontos; grava o resultado no histórico.
 - O **frontend** faz polling em `/api/v1/jobs/{job_id}` e, ao concluir, carrega o laudo e os marcadores a partir do histórico.
+
+---
+
+## IA (Model/LLM)
+
+Esta aplicação usa **dois tipos de modelos**: um **LLM com visão** para escrever o laudo e gerar “o que procurar” (queries) e um modelo de visão da **Fal AI** para transformar essas queries em **coordenadas** na imagem (pontos). Quando você usa rotas de detecção (`/detect/*`), a Fal também pode retornar **bounding boxes**.
+
+Na prática, o fluxo fica assim:
+- O LLM (via OpenRouter) lê a foto e produz um **relatório estruturado** de retoque.
+- No final do relatório, ele inclui uma seção **`## LOCALIZAÇÃO`** com frases em inglês (uma por item) que o backend usa como **`point_queries`**.
+- Para cada `point_query`, o backend chama a Fal **`/point`** e recebe coordenadas **normalizadas (0–1)**.
+- Por fim, o backend monta os **`markers`** (tooltip) combinando o item do relatório (descrição/técnica/prioridade) com as coordenadas retornadas.
+
+### Figura: fluxo dos modelos
+
+```mermaid
+flowchart TD
+  U[Foto enviada pelo usuário] --> AG[Agente (OpenRouter\nModelo com visão)]
+  AG -->|Laudo + point_queries| MQ[Perguntas para localização]
+  MQ --> P[Fal AI Moondream 3\n/point (coordenadas x,y)]
+  U --> P
+  P --> M[Marcadores (tooltips: técnica/descrição)]
+  AG -->|Opcional| D[Fal AI Moondream 3\n/detect (bounding boxes)]
+  D --> B[Objetos detectados\n(x_min..y_max)]
+  M --> UI[Frontend: overlay + relatório]
+```
+
+### O que cada modelo faz
+
+- **OpenRouter (Agente / LLM com visão)**: gera o **laudo** e os itens do relatório (essencial/recomendado/opcional), usando o template de prompt em `backend/prompts/skin.md`. Além do texto, o agente deve incluir uma seção **`## LOCALIZAÇÃO`** com frases em inglês; o backend extrai essas frases para formar `point_queries` (com fallback caso a seção esteja ausente).
+- **Fal AI Moondream 3 / point**: recebe a **imagem** e uma `point_query`, retornando pontos com **`x` e `y` normalizados (0–1)**. O backend agrega tudo em `points_by_query`.
+- **Fal AI Moondream 3 / detect (opcional / endpoints dedicados)**: retorna **bounding boxes** (`x_min..y_max`) para objetos/elementos quando você usa rotas de detecção (`/detect/*`).
+
+### Tooltips e markers (como o app “junta” LLM + pontos)
+
+- O backend cria uma lista plana de `markers` com: `id`, `x`, `y`, `query`, `description`, `relevance` e `photoshop_technique`.
+- A descrição/técnica vêm do relatório do LLM; já a posição (`x`,`y`) vem do `/point` da Fal. Isso permite renderizar os pontos na imagem com tooltip contextual.
+
+### Endpoint -> Modelo (resumo)
+
+| Endpoint | Modelo principal | Saída usada no app |
+|----------|-------------------|---------------------|
+| `/api/v1/agent/analyze*` | OpenRouter (LLM com visão) + Fal `/point` | Laudo + pontos/markers |
+| `/api/v1/point/*` | Fal `/point` | Pontos (x,y) e opcional imagem com overlay |
+| `/api/v1/detect/*` | Fal `/detect` | Bounding boxes (x_min..y_max) |
 
 ---
 
