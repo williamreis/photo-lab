@@ -1,0 +1,19 @@
+# Fal AI
+fal-client
+python-dotenv
+Pillow
+
+# Agent (Agno + Gemini)
+agno
+google-genai
+openai
+
+# API
+fastapi
+uvicorn[standard]
+python-multipart
+httpx
+
+# Queue (async processing)
+redis
+rq
