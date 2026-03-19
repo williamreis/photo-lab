@@ -1,8 +1,5 @@
-"""Configuração centralizada da aplicação."""
-
 import os
 from pathlib import Path
-
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,7 +12,7 @@ FAL_MODEL_DETECT = "fal-ai/moondream3-preview/detect"
 # Agent (OpenRouter - API compatível com OpenAI)
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-# Modelo com suporte a visão (imagem). Ex.: google/gemini-2.0-flash, google/gemini-flash-1.5
+# Modelo com suporte a visão (imagem)
 AGENT_MODEL = os.getenv("AGENT_MODEL", "google/gemini-2.0-flash")
 
 # Queue (Redis/RQ)
@@ -25,14 +22,10 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 _BACKEND_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _BACKEND_DIR.parent
 IMAGES_DIR = _PROJECT_ROOT / "images"
-UPLOADS_DIR = _BACKEND_DIR / "uploads"
 FRONTEND_DIR = _PROJECT_ROOT / "frontend"
-HISTORY_DIR = _BACKEND_DIR / "history"
 PROMPTS_DIR = _BACKEND_DIR / "prompts"
-OUTPUT_DIR = _BACKEND_DIR / "output"
-OUTPUT_AGENT_DIR = OUTPUT_DIR / "agent"
-OUTPUT_DETECT_DIR = OUTPUT_DIR / "detect"
-OUTPUT_POINT_DIR = OUTPUT_DIR / "point"
+UPLOADS_DIR = _BACKEND_DIR / "storage/uploads"
+HISTORY_DIR = _BACKEND_DIR / "storage/history"
 
 # Point - desenho dos pontos
 POINT_RADIUS = 8
