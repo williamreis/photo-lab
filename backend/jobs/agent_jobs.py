@@ -1,9 +1,5 @@
-"""Jobs RQ para análises do agente."""
-
 from __future__ import annotations
-
 from typing import Any
-
 from schemas.agent import PointXY, RetouchMarker
 from services.agent_service import AgentService
 from services.history_service import update_entry
@@ -70,4 +66,3 @@ def analyze_persist_job(saved_filename: str, original_filename: str, history_id:
         "saved_filename": result["saved_filename"],
         "history_id": history_id,
     }
-

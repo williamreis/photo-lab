@@ -1,7 +1,4 @@
-"""Schemas para o endpoint do agente de análise de pele."""
-
 from typing import Literal, Optional
-
 from pydantic import BaseModel, Field
 
 
@@ -11,7 +8,7 @@ class ReportItem(BaseModel):
     description: str = Field(
         ...,
         description="Descrição do problema"
-        )
+    )
     relevance: Literal["ESSENCIAL", "RECOMENDADO", "OPCIONAL"] = Field(
         ...,
         description="Relevância do retoque (essencial, recomendado ou opcional)",
@@ -37,12 +34,13 @@ class ReportItem(BaseModel):
         le=1.0,
     )
 
-class SkinAnalysisSchema(BaseModel):
 
+class SkinAnalysisSchema(BaseModel):
     report: list[ReportItem] = Field(
         ...,
         description="O relatório da análise da imagem",
     )
+
 
 class PointXY(BaseModel):
     """Coordenada normalizada (0-1)."""
