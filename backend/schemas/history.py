@@ -1,7 +1,4 @@
-"""Schemas do histórico de análises."""
-
 from pydantic import BaseModel, Field
-
 from schemas.agent import PointXY, RetouchMarker
 
 

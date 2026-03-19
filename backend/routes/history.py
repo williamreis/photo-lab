@@ -1,7 +1,4 @@
-"""Histórico de análises salvas."""
-
 from fastapi import APIRouter, HTTPException, Query
-
 from schemas.agent import PointXY, RetouchMarker
 from schemas.history import HistoryDetailResponse, HistorySummary
 from services.history_service import delete_entry, get_by_id, list_summaries

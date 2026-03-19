@@ -1,9 +1,5 @@
-"""Rotas para acompanhar jobs (RQ)."""
-
 from __future__ import annotations
-
 from fastapi import APIRouter, HTTPException
-
 from services.queue_service import get_queue
 
 router = APIRouter()
@@ -32,4 +28,3 @@ def job_status(job_id: str) -> dict:
         "job_id": job.id,
         "status": "processing" if job.started_at else "queued",
     }
-
