@@ -2,16 +2,25 @@ import json
 import re
 import uuid
 import fal_client
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+import random
 from pathlib import Path
 from typing import Any
 from agno.agent import Agent
 from agno.media import Image
 from agno.models.openai import OpenAIChat
+from PIL import Image as PILImage
 from config import (
     AGENT_MODEL,
     OPENROUTER_BASE_URL,
     OPENROUTER_API_KEY,
     FAL_MODEL_POINT,
+    POINT_QUERY_LIMIT,
+    POINTS_PER_QUERY_LIMIT,
+    MARKERS_TOTAL_LIMIT,
+    FAL_IMAGE_MAX_SIDE,
+    FAL_IMAGE_JPEG_QUALITY,
     PROMPTS_DIR,
     UPLOADS_DIR,
     validate_fal_key,
@@ -154,7 +163,45 @@ def _build_markers(
                     "photoshop_technique": item.photoshop_technique if item else "",
                 }
             )
+            if isinstance(MARKERS_TOTAL_LIMIT, int) and MARKERS_TOTAL_LIMIT > 0 and mid >= MARKERS_TOTAL_LIMIT:
+                return markers
     return markers
+
+
+def _prepare_image_for_fal(image_path: Path) -> Path:
+    """
+    Cria uma versão otimizada (redimensionada/comprimida) para enviar ao Fal,
+    reduzindo latência e tokens de entrada. Não desenha overlays.
+    """
+    try:
+        max_side = int(FAL_IMAGE_MAX_SIDE or 0)
+    except Exception:
+        max_side = 0
+    if max_side <= 0:
+        return image_path
+
+    try:
+        img = PILImage.open(image_path).convert("RGB")
+        w, h = img.size
+        if max(w, h) <= max_side:
+            return image_path
+        scale = max_side / float(max(w, h))
+        nw = max(1, int(round(w * scale)))
+        nh = max(1, int(round(h * scale)))
+        img = img.resize((nw, nh), resample=PILImage.Resampling.LANCZOS)
+
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = UPLOADS_DIR / f"temp_fal_{uuid.uuid4().hex[:10]}.jpg"
+        q = 85
+        try:
+            q = int(FAL_IMAGE_JPEG_QUALITY or 85)
+        except Exception:
+            q = 85
+        q = max(50, min(95, q))
+        img.save(out_path, format="JPEG", quality=q, optimize=True, progressive=True)
+        return out_path
+    except Exception:
+        return image_path
 
 
 class AgentService:
@@ -280,7 +327,14 @@ Use frases curtas e descritivas em inglês para cada item que você identificou 
         if report_items:
             seen: set[str] = set()
             point_queries = []
-            for r in report_items:
+            # Prioriza ESSENCIAL -> RECOMENDADO -> OPCIONAL e limita
+            # o total de queries para reduzir o número de chamadas ao Fal /point.
+            prio = {"ESSENCIAL": 0, "RECOMENDADO": 1, "OPCIONAL": 2}
+            ordered = sorted(
+                report_items,
+                key=lambda r: (prio.get(str(r.relevance).upper(), 9)),
+            )
+            for r in ordered:
                 q = (r.query or "").strip()
                 if q and q not in seen:
                     seen.add(q)
@@ -290,25 +344,65 @@ Use frases curtas e descritivas em inglês para cada item que você identificou 
         if not point_queries:
             point_queries = _extract_queries_from_report_fallback(analysis)
 
+        # Aplica limite global (mesmo no fallback).
+        if isinstance(POINT_QUERY_LIMIT, int) and POINT_QUERY_LIMIT > 0:
+            point_queries = point_queries[:POINT_QUERY_LIMIT]
+
         # Upload da imagem para um URL público que o Fal consiga acessar.
         # Observação: como precisamos apenas das coordenadas (x,y), não
         # precisamos do preview/imagem desenhada.
-        fal_image_url = fal_client.upload_file(str(image_path))
+        fal_path = _prepare_image_for_fal(image_path)
+        try:
+            fal_image_url = fal_client.upload_file(str(fal_path))
+        finally:
+            # Remove o arquivo temporário otimizado (se foi criado)
+            try:
+                if fal_path != image_path and fal_path.exists():
+                    fal_path.unlink()
+            except Exception:
+                pass
 
         points_by_query: dict[str, list[dict[str, Any]]] = {}
-        for query in point_queries:
-            try:
-                fal_result = fal_client.subscribe(
-                    FAL_MODEL_POINT,
-                    arguments={
-                        "image_url": fal_image_url,
-                        "prompt": query,
-                        "preview": False,
-                    },
-                )
-                points_by_query[query] = fal_result.get("points") or []
-            except Exception:
-                points_by_query[query] = []
+        # Otimização: chamadas ao Fal em paralelo
+        # Limite para evitar saturar rede/provedor.
+        max_workers = max(1, min(2, len(point_queries)))
+
+        def _locate_one(q: str) -> tuple[str, list[dict[str, Any]]]:
+            # Retry leve quando estourar limite de concorrência/429.
+            attempts = 3
+            for i in range(attempts):
+                try:
+                    fal_result = fal_client.subscribe(
+                        FAL_MODEL_POINT,
+                        arguments={
+                            "image_url": fal_image_url,
+                            "prompt": q,
+                            "preview": False,
+                        },
+                    )
+                    pts = fal_result.get("points") or []
+                    if isinstance(POINTS_PER_QUERY_LIMIT, int) and POINTS_PER_QUERY_LIMIT > 0:
+                        pts = list(pts)[:POINTS_PER_QUERY_LIMIT]
+                    return q, pts
+                except Exception as e:
+                    msg = str(e).lower()
+                    too_many = "too many" in msg or "simultaneously" in msg or "429" in msg or "rate limit" in msg
+                    if not too_many or i == attempts - 1:
+                        raise
+                    # backoff com jitter
+                    time.sleep((0.8 * (2 ** i)) + random.random() * 0.35)
+            return q, []
+
+        if point_queries:
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = {ex.submit(_locate_one, q): q for q in point_queries}
+                for fut in as_completed(futures):
+                    q = futures[fut]
+                    try:
+                        qq, pts = fut.result()
+                        points_by_query[qq] = pts
+                    except Exception:
+                        points_by_query[q] = []
 
         return {
             "analysis": analysis,

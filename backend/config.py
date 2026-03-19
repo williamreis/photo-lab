@@ -18,6 +18,19 @@ AGENT_MODEL = os.getenv("AGENT_MODEL", "google/gemini-2.0-flash")
 # Queue (Redis/RQ)
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+# Limites de performance
+# Reduz o tempo total limitando quantas queries viram chamadas ao Fal /point.
+POINT_QUERY_LIMIT = int(os.getenv("POINT_QUERY_LIMIT", "6"))
+# Limita quantos pontos (x,y) manter por query retornada pelo Fal.
+POINTS_PER_QUERY_LIMIT = int(os.getenv("POINTS_PER_QUERY_LIMIT", "2"))
+# Limite total de markers (segurança para UI).
+MARKERS_TOTAL_LIMIT = int(os.getenv("MARKERS_TOTAL_LIMIT", "40"))
+
+# Otimização: reduz custo/latência do Fal ao enviar imagens menores
+# (não afeta o zoom no frontend; só o processamento).
+FAL_IMAGE_MAX_SIDE = int(os.getenv("FAL_IMAGE_MAX_SIDE", "1600"))
+FAL_IMAGE_JPEG_QUALITY = int(os.getenv("FAL_IMAGE_JPEG_QUALITY", "85"))
+
 # Paths (backend/ fica em parent, projeto em parent.parent)
 _BACKEND_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _BACKEND_DIR.parent

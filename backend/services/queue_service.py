@@ -1,5 +1,6 @@
-import redis
 from __future__ import annotations
+
+import redis
 from rq import Queue
 from config import REDIS_URL
 
