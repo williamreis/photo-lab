@@ -111,6 +111,20 @@ def update_entry(entry_id: str, patch: dict[str, Any]) -> bool:
     return True
 
 
+def delete_entry(entry_id: str) -> bool:
+    """Remove um registro do histórico (arquivo JSON)."""
+    if not _safe_id(entry_id):
+        return False
+    path = HISTORY_DIR / f"{entry_id}.json"
+    if not path.is_file():
+        return False
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def list_summaries(limit: int = 80) -> list[dict[str, Any]]:
     """Lista entradas mais recentes primeiro."""
     if not HISTORY_DIR.is_dir():

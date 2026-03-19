@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from schemas.agent import PointXY, RetouchMarker
 from schemas.history import HistoryDetailResponse, HistorySummary
-from services.history_service import get_by_id, list_summaries
+from services.history_service import delete_entry, get_by_id, list_summaries
 
 router = APIRouter()
 
@@ -52,3 +52,15 @@ def history_get(entry_id: str) -> HistoryDetailResponse:
         job_id=raw.get("job_id"),
         error_message=raw.get("error_message"),
     )
+
+
+@router.delete(
+    "/{entry_id}",
+    summary="Remover registro do histórico",
+    description="Remove um registro do histórico de análises já salvo.",
+)
+def history_delete(entry_id: str) -> dict[str, bool]:
+    ok = delete_entry(entry_id)
+    if not ok:
+        raise HTTPException(404, "Registro não encontrado")
+    return {"deleted": True}
