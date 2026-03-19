@@ -1,7 +1,4 @@
-"""Endpoints do agente de análise de pele."""
-
 import base64
-import io
 import uuid
 from pathlib import Path
 
@@ -16,7 +13,7 @@ from schemas.agent import (
 )
 from jobs.agent_jobs import analyze_persist_job
 from services.agent_service import AgentService
-from services.history_service import create_processing_entry, save_analysis
+from services.history_service import create_processing_entry, save_analysis, update_entry
 from services.queue_service import get_queue
 from config import UPLOADS_DIR
 
@@ -72,7 +69,7 @@ async def agent_analyze(
 async def agent_analyze_return_image(
     image: UploadFile = File(..., description="Imagem para análise de pele"),
 ) -> AgentImageWithAnalysisResponse:
-    """Retorna a imagem com os pontos marcados (base64) e o descritivo da análise da LLM."""
+    """Retorna a imagem original (base64) e o descritivo da análise da LLM."""
     if not image.content_type or not image.content_type.startswith("image/"):
         raise HTTPException(400, "Arquivo deve ser uma imagem")
 
@@ -87,11 +84,8 @@ async def agent_analyze_return_image(
     if not analysis_text:
         analysis_text = "(Nenhum texto retornado pelo agente.)"
 
-    img = result["image_drawn"]
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    buffer.seek(0)
-    image_base64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+    # Sem overlays/desenhos: devolvemos a imagem original enviada.
+    image_base64 = base64.b64encode(content).decode("ascii")
 
     return AgentImageWithAnalysisResponse(
         analysis=analysis_text,
@@ -190,24 +184,32 @@ async def agent_analyze_persist_async(
     out_path.write_bytes(content)
     image_url = f"/uploads/{saved_filename}"
 
-    # 2) Criar job e entrada "processing" no histórico
+    # 2) Criar entrada "processing" no histórico (precisamos do history_id antes do enqueue)
+    #    para evitar corrida: o worker pode iniciar o job antes do job.args ser atualizado.
+    history_id = create_processing_entry(
+        image_url=image_url,
+        saved_filename=saved_filename,
+        job_id="pending",
+    )
+
+    # 3) Enfileirar análise com o history_id correto
     job = q.enqueue(
         analyze_persist_job,
         saved_filename,
         image.filename or "image.jpg",
-        "pending",  # placeholder, será substituído abaixo
+        history_id,
         job_timeout=900,  # 15 min
         result_ttl=60 * 60 * 24,  # 24h
         failure_ttl=60 * 60 * 24,
     )
-    history_id = create_processing_entry(
-        image_url=image_url,
-        saved_filename=saved_filename,
-        job_id=job.id,
-    )
 
-    # 3) Atualizar args do job com o history_id real
-    job.args = (saved_filename, image.filename or "image.jpg", history_id)
-    job.save()
+    # 4) Atualizar o histórico com o job_id real
+    update_entry(
+        history_id,
+        {
+            "status": "processing",
+            "job_id": job.id,
+        },
+    )
 
     return {"job_id": job.id, "history_id": history_id, "status": "queued"}
