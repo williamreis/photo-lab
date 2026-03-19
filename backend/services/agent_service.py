@@ -1,26 +1,22 @@
 import json
 import re
 import uuid
-from datetime import datetime
+import fal_client
 from pathlib import Path
 from typing import Any
-
 from agno.agent import Agent
 from agno.media import Image
 from agno.models.openai import OpenAIChat
-from PIL import Image as PILImage
-
 from config import (
     AGENT_MODEL,
     OPENROUTER_BASE_URL,
     OPENROUTER_API_KEY,
-    OUTPUT_AGENT_DIR,
+    FAL_MODEL_POINT,
     PROMPTS_DIR,
     UPLOADS_DIR,
     validate_fal_key,
 )
 from schemas.agent import ReportItem, SkinAnalysisSchema
-from services.point_service import PointService
 
 
 def _load_skin_prompt() -> str:
@@ -71,6 +67,7 @@ def _normalize_agent_output(raw: Any) -> tuple[str, list[ReportItem]]:
 
     return s, []
 
+
 def _looks_like_provider_error(text: str) -> bool:
     s = (text or "").strip().lower()
     if not s:
@@ -120,8 +117,8 @@ def _extract_queries_from_report_fallback(analysis: str) -> list[str]:
 
 
 def _build_markers(
-    points_by_query: dict[str, list[dict]],
-    report_items: list[ReportItem],
+        points_by_query: dict[str, list[dict]],
+        report_items: list[ReportItem],
 ) -> list[dict]:
     """Une pontos (x,y) a descrições do relatório pela query."""
     by_query = {
@@ -140,7 +137,7 @@ def _build_markers(
                     r
                     for r in report_items
                     if qk in (r.query or "").lower()
-                    or (r.query or "").lower() in qk
+                       or (r.query or "").lower() in qk
                 ),
                 None,
             )
@@ -200,9 +197,9 @@ Use frases curtas e descritivas em inglês para cada item que você identificou 
         )
 
     def analyze_and_mark(
-        self,
-        image_content: bytes,
-        filename: str = "image.jpg",
+            self,
+            image_content: bytes,
+            filename: str = "image.jpg",
     ) -> dict:
         """Analisa bytes temporários (arquivo não persistido)."""
         UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -215,9 +212,9 @@ Use frases curtas e descritivas em inglês para cada item que você identificou 
                 temp_path.unlink()
 
     def analyze_persist(
-        self,
-        image_content: bytes,
-        filename: str = "image.jpg",
+            self,
+            image_content: bytes,
+            filename: str = "image.jpg",
     ) -> dict:
         """
         Salva a imagem em uploads/ com nome único e executa análise + marcação.
@@ -293,37 +290,29 @@ Use frases curtas e descritivas em inglês para cada item que você identificou 
         if not point_queries:
             point_queries = _extract_queries_from_report_fallback(analysis)
 
-        point_service = PointService()
-        points_by_query: dict[str, list[dict]] = {}
-        all_points: list[dict] = []
+        # Upload da imagem para um URL público que o Fal consiga acessar.
+        # Observação: como precisamos apenas das coordenadas (x,y), não
+        # precisamos do preview/imagem desenhada.
+        fal_image_url = fal_client.upload_file(str(image_path))
 
-        base_img = PILImage.open(image_path).convert("RGB")
-
+        points_by_query: dict[str, list[dict[str, Any]]] = {}
         for query in point_queries:
             try:
-                result = point_service.locate_from_path(
-                    image_path, query, preview=False
+                fal_result = fal_client.subscribe(
+                    FAL_MODEL_POINT,
+                    arguments={
+                        "image_url": fal_image_url,
+                        "prompt": query,
+                        "preview": False,
+                    },
                 )
-                pts = result.get("points", [])
-                points_by_query[query] = pts
-                all_points.extend(pts)
+                points_by_query[query] = fal_result.get("points") or []
             except Exception:
                 points_by_query[query] = []
-
-        img_drawn = (
-            point_service._draw_points_on_image(base_img, all_points)
-            if all_points
-            else base_img
-        )
-
-        OUTPUT_AGENT_DIR.mkdir(parents=True, exist_ok=True)
-        out_name = datetime.now().strftime("%Y%m%d_%H%M%S") + "_agent.png"
-        img_drawn.save(OUTPUT_AGENT_DIR / out_name)
 
         return {
             "analysis": analysis,
             "point_queries": point_queries,
             "points_by_query": points_by_query,
-            "image_drawn": img_drawn,
             "report_items": report_items,
         }
