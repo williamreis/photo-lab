@@ -25,8 +25,8 @@ services:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
     volumes:
       - ./backend:/app/backend
-      - uploads_data:/app/backend/uploads
-      - history_data:/app/backend/history
+      - ./backend/storage/uploads:/app/backend/storage/uploads
+      - ./backend/storage/history:/app/backend/storage/history
     depends_on:
       - redis
     restart: unless-stopped
@@ -51,8 +51,8 @@ services:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
     volumes:
       - ./backend:/app/backend
-      - uploads_data:/app/backend/uploads
-      - history_data:/app/backend/history
+      - ./backend/storage/uploads:/app/backend/storage/uploads
+      - ./backend/storage/history:/app/backend/storage/history
     depends_on:
       - redis
     restart: unless-stopped
