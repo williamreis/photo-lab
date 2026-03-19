@@ -4,6 +4,16 @@
   const API_JOBS = '/api/v1/jobs';
   let enriched = [];
   let activeTab = 'ess';
+  let zoomLevel = 1;
+  let showPointNumbers = true;
+  let panX = 0;
+  let panY = 0;
+  let isPanning = false;
+  let panStartClientX = 0;
+  let panStartClientY = 0;
+  let panStartX = 0;
+  let panStartY = 0;
+  let movedEnough = false;
 
   const $ = function (id) { return document.getElementById(id); };
   function setUploadLoading(statusTxt, phaseTxt) {
@@ -15,6 +25,97 @@
   function setUploadElapsed(mmss) {
     var e = $('upload-elapsed');
     if (e) e.textContent = mmss || '00:00';
+  }
+
+  function applyZoom(z) {
+    var wrap = $('image-wrap');
+    if (!wrap) return;
+    var v = Number(z);
+    if (!isFinite(v)) v = 1;
+    v = Math.max(0.7, Math.min(2, v));
+    wrap.style.transformOrigin = 'center center';
+    // Quando o zoom volta para 1x, resetamos o pan para manter o framing original.
+    if (v <= 1.001) {
+      panX = 0;
+      panY = 0;
+    }
+    wrap.style.transform = 'translate(' + panX + 'px, ' + panY + 'px) scale(' + v + ')';
+  }
+
+  function applyPointNumbersVisibility() {
+    document.querySelectorAll('.marker-pin').forEach(function (btn) {
+      btn.classList.toggle('is-markers-hidden', !showPointNumbers);
+    });
+  }
+
+  function clampPan() {
+    // Limita o pan com base no quanto a imagem "cresce" ao escalar.
+    var wrap = $('image-wrap');
+    var img = $('result-image');
+    if (!wrap || !img) return;
+    if (!isFinite(zoomLevel) || zoomLevel <= 1.001) return;
+
+    var vw = wrap.clientWidth;
+    var vh = wrap.clientHeight;
+    var w0 = img.offsetWidth || vw;
+    var h0 = img.offsetHeight || vh;
+
+    var scaledW = w0 * zoomLevel;
+    var scaledH = h0 * zoomLevel;
+
+    var maxX = Math.max(0, (scaledW - vw) / 2);
+    var maxY = Math.max(0, (scaledH - vh) / 2);
+
+    panX = Math.max(-maxX, Math.min(maxX, panX));
+    panY = Math.max(-maxY, Math.min(maxY, panY));
+  }
+
+  function setupPanning() {
+    var wrap = $('image-wrap');
+    if (!wrap) return;
+
+    function onPointerDown(e) {
+      // Não iniciamos pan ao clicar/arrastar diretamente em um marcador.
+      if (e.target && e.target.closest && e.target.closest('.marker-pin')) return;
+      if (zoomLevel <= 1.001) return;
+
+      isPanning = true;
+      movedEnough = false;
+      panStartClientX = e.clientX;
+      panStartClientY = e.clientY;
+      panStartX = panX;
+      panStartY = panY;
+
+      wrap.style.cursor = 'grabbing';
+      if (wrap.setPointerCapture && e.pointerId != null) {
+        wrap.setPointerCapture(e.pointerId);
+      }
+      e.preventDefault();
+    }
+
+    function onPointerMove(e) {
+      if (!isPanning) return;
+      var dx = e.clientX - panStartClientX;
+      var dy = e.clientY - panStartClientY;
+      if (Math.abs(dx) + Math.abs(dy) > 3) movedEnough = true;
+      panX = panStartX + dx;
+      panY = panStartY + dy;
+      clampPan();
+      applyZoom(zoomLevel);
+    }
+
+    function endPan() {
+      if (!isPanning) return;
+      isPanning = false;
+      wrap.style.cursor = (zoomLevel > 1.001) ? 'grab' : '';
+    }
+
+    wrap.style.cursor = (zoomLevel > 1.001) ? 'grab' : '';
+    wrap.addEventListener('pointerdown', onPointerDown);
+    wrap.addEventListener('pointermove', onPointerMove);
+    wrap.addEventListener('pointerup', endPan);
+    wrap.addEventListener('pointercancel', endPan);
+    wrap.addEventListener('pointerleave', endPan);
   }
   function formatElapsed(ms) {
     var sec = Math.max(0, Math.floor(ms / 1000));
@@ -52,9 +153,10 @@
         return;
       }
       items.forEach(function (it) {
-        var row = document.createElement('button');
-        row.type = 'button';
+        var row = document.createElement('div');
         row.className = 'history-item w-full flex gap-4 p-3 text-left';
+        row.setAttribute('role', 'button');
+        row.tabIndex = 0;
         row.dataset.id = it.id;
         row.dataset.status = it.status || '';
         row.dataset.jobId = it.job_id || '';
@@ -70,6 +172,8 @@
           : (isFailed
             ? '<span class="history-badge history-badge--failed"><span class="history-badge__dot history-badge__dot--failed"></span>Falhou</span>'
             : '');
+        var disableDelete = isProcessing ? 'disabled' : '';
+        var deleteRowOpacity = isProcessing ? 'opacity-40 cursor-not-allowed' : '';
         row.innerHTML =
           '<div class="history-thumb w-[72px] h-[72px] rounded-xl overflow-hidden shrink-0 bg-slate-800/80 ring-1 ring-white/10">' +
           '<img src="' + escapeAttr(it.image_url) + '" alt="" class="w-full h-full object-cover"/>' +
@@ -81,6 +185,20 @@
           statusBadge +
           '</p>' +
           '<p class="text-sm text-slate-300 mt-1.5 line-clamp-2 leading-snug">' + escapeHtml(it.preview || '') + '</p></div>';
+        row.innerHTML +=
+          '<button type="button" class="history-delete-btn nav-pill rounded-full w-9 h-9 flex items-center justify-center shrink-0 ' + deleteRowOpacity + '" data-delete-id="' + escapeAttr(it.id) + '" ' + disableDelete + ' aria-label="Remover do histórico">' +
+          '<iconify-icon icon="solar:trash-bin-trash-bold" width="18"></iconify-icon>' +
+          '</button>';
+
+        var delBtn = row.querySelector('.history-delete-btn');
+        if (delBtn) {
+          delBtn.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (it && it.id) deleteHistoryEntry(it.id);
+          });
+        }
+
         row.addEventListener('click', function () {
           if (isProcessing) {
             alert('Esta análise ainda está em processamento.');
@@ -92,12 +210,33 @@
           }
           openHistoryEntry(it.id);
         });
+
+        row.addEventListener('keydown', function (e) {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          row.click();
+        });
         $('history-list').appendChild(row);
       });
     } catch (e) {
       $('history-loading').classList.add('hidden');
       $('history-empty').classList.remove('hidden');
       $('history-empty').innerHTML = 'Não foi possível carregar o histórico.';
+    }
+  }
+
+  async function deleteHistoryEntry(entryId) {
+    if (!entryId) return;
+    if (!window.confirm('Remover este registro do histórico?')) return;
+    try {
+      var res = await fetch(API_HISTORY + '/' + encodeURIComponent(entryId), { method: 'DELETE' });
+      if (!res.ok) {
+        var data = await res.json().catch(function () { return {}; });
+        throw new Error(data.detail || 'Falha ao remover.');
+      }
+      await loadHistoryList();
+    } catch (e) {
+      alert(e.message || 'Erro ao remover do histórico.');
     }
   }
   function escapeAttr(s) {
@@ -142,6 +281,31 @@
   $('btn-hist-result').addEventListener('click', openHistory);
   $('history-close').addEventListener('click', closeHistory);
   $('history-backdrop').addEventListener('click', closeHistory);
+
+  // Controles: zoom e exibição de números nos pontos
+  if ($('zoom-range')) {
+    zoomLevel = parseFloat($('zoom-range').value || '1') || 1;
+    $('zoom-label').textContent = Math.round(zoomLevel * 100) + '%';
+    applyZoom(zoomLevel);
+    $('zoom-range').addEventListener('input', function () {
+      zoomLevel = parseFloat(this.value || '1') || 1;
+      $('zoom-label').textContent = Math.round(zoomLevel * 100) + '%';
+      clampPan();
+      applyZoom(zoomLevel);
+    });
+  }
+  if ($('btn-toggle-numbers')) {
+    $('btn-toggle-numbers').addEventListener('click', function () {
+      showPointNumbers = !showPointNumbers;
+      if ($('toggle-numbers-label')) {
+        $('toggle-numbers-label').textContent = showPointNumbers ? 'Marcadores: ON' : 'Marcadores: OFF';
+      }
+      applyPointNumbersVisibility();
+    });
+  }
+
+  // Permite arrastar (pan) a imagem quando estiver com zoom > 1.
+  setupPanning();
 
   function isEssential(m) {
     return (m.relevance || '').toUpperCase() === 'ESSENCIAL';
@@ -277,7 +441,11 @@
       var btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'marker-pin ' + (m.tier === 'ess' ? 'marker-pin--ess' : 'marker-pin--rec');
-      btn.textContent = String(m.displayNum);
+      if (!showPointNumbers) btn.classList.add('is-markers-hidden');
+      var num = document.createElement('span');
+      num.className = 'marker-pin__num';
+      num.textContent = String(m.displayNum);
+      btn.appendChild(num);
       btn.dataset.num = String(m.displayNum);
       btn.setAttribute('title', 'Clique para ir à descrição no laudo');
       btn.addEventListener('click', function (e) {
@@ -338,6 +506,9 @@
     setTab(enriched.some(function (m) { return m.tier === 'ess'; }) ? 'ess' : 'rec');
     $('result-image').onload = function () { layoutMarkers(); };
     if ($('result-image').complete) layoutMarkers();
+    panX = 0;
+    panY = 0;
+    applyZoom(zoomLevel);
     $('screen-upload').classList.add('hidden');
     $('screen-result').classList.remove('hidden');
   }
@@ -423,6 +594,9 @@
       setUploadLoading('Upload recebido', 'Na fila');
       var result = await pollJob(data.job_id);
       showResult(result);
+      // Atualiza o histórico para remover a flag "Processando" do registro
+      // (caso o usuário tenha deixado a lateral aberta).
+      try { await loadHistoryList(); } catch (e) {}
     } catch (err) {
       $('upload-error').textContent = err.message || String(err);
       $('upload-error').classList.remove('hidden');
