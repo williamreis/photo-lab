@@ -1,8 +1,6 @@
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-
-from config import FRONTEND_DIR, UPLOADS_DIR
+from config import UPLOADS_DIR
 from routes import api_router
 
 app = FastAPI(
