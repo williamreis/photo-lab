@@ -4,7 +4,10 @@ Aplicação web para **análise automática de pele** e **laudo técnico de reto
 
 ![Photo Lab — Studio](https://img.shields.io/badge/Photo%20Lab-Studio-teal?style=flat-square)
 
+
 ---
+![Apresentação](docs/images/tela1.png)
+
 
 ## Índice
 
@@ -167,19 +170,6 @@ Na prática, o fluxo fica assim:
 - Para cada `point_query`, o backend chama a Fal **`/point`** e recebe coordenadas **normalizadas (0–1)**.
 - Por fim, o backend monta os **`markers`** (tooltip) combinando o item do relatório (descrição/técnica/prioridade) com as coordenadas retornadas.
 
-### Figura: fluxo dos modelos
-
-```mermaid
-flowchart TD
-  U[Foto enviada pelo usuário] --> AG[Agente (OpenRouter\nModelo com visão)]
-  AG -->|Laudo + point_queries| MQ[Perguntas para localização]
-  MQ --> P[Fal AI Moondream 3\n/point (coordenadas x,y)]
-  U --> P
-  P --> M[Marcadores (tooltips: técnica/descrição)]
-  AG -->|Opcional| D[Fal AI Moondream 3\n/detect (bounding boxes)]
-  D --> B[Objetos detectados\n(x_min..y_max)]
-  M --> UI[Frontend: overlay + relatório]
-```
 
 ### O que cada modelo faz
 
