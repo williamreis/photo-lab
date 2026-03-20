@@ -42,7 +42,7 @@ Aplicação web para **análise automática de pele** e **laudo técnico de reto
 | **Backend**   | Python 3.12, FastAPI, Uvicorn |
 | **Frontend**  | HTML, CSS (Tailwind), JavaScript vanilla |
 | **IA – Agente** | Agno + OpenRouter (modelo com visão, ex.: Gemini 2.0 Flash) |
-| **IA – Pontos/Detecção** | Fal AI (Moondream 3 – point/detect) |
+| **IA – Pontos (interno)** | Fal AI — Moondream 3 **point** (`fal-ai/moondream3-preview/point`), chamado pelo serviço do agente |
 | **Fila**      | Redis, RQ (Redis Queue) |
 | **Servir UI** | Nginx (Alpine) |
 | **Orquestração** | Docker Compose |
@@ -147,10 +147,10 @@ Serviços: `redis`, `api`, `worker`, `frontend`. O worker processa os jobs de an
        │                   │            └──────┬──────┘
        │                   │                   │
        │                   │                   ▼
-       │                   │            Fal AI + OpenRouter
-       │                   │            (point, detect, agent)
+       │                   │            OpenRouter (laudo) + Fal Moondream /point
+       │                   │            (coordenadas; sem rotas HTTP /point ou /detect)
        ▼                   ▼
-   Uploads estáticos   /api/v1/*  (agent, history, jobs, point, detect)
+   Uploads estáticos   /api/v1/*  (agent, history, jobs)
 ```
 
 - O **frontend** envia a imagem para `/api/v1/agent/analyze/persist_async`.
@@ -162,7 +162,9 @@ Serviços: `redis`, `api`, `worker`, `frontend`. O worker processa os jobs de an
 
 ## IA (Model/LLM)
 
-Esta aplicação usa **dois tipos de modelos**: um **LLM com visão** para escrever o laudo e gerar “o que procurar” (queries) e um modelo de visão da **Fal AI** para transformar essas queries em **coordenadas** na imagem (pontos). Quando você usa rotas de detecção (`/detect/*`), a Fal também pode retornar **bounding boxes**.
+Esta aplicação usa **dois tipos de modelos**: um **LLM com visão** (OpenRouter) para escrever o laudo e definir **queries de localização**, e o endpoint **Moondream 3 / point** da **Fal AI**, chamado **internamente** pelo backend, para obter **coordenadas (x, y)** na imagem.
+
+**Importante:** nesta versão do repositório **não existem** rotas HTTP públicas `/api/v1/point/*` nem `/api/v1/detect/*`. O modelo **detect** (bounding boxes) está referenciado em `config.py` (`FAL_MODEL_DETECT`), mas **não** está exposto como API REST — só o fluxo do **agente** usa o **point** via `fal-client`.
 
 Na prática, o fluxo fica assim:
 - O LLM (via OpenRouter) lê a foto e produz um **relatório estruturado** de retoque.
@@ -174,52 +176,51 @@ Na prática, o fluxo fica assim:
 ### O que cada modelo faz
 
 - **OpenRouter (Agente / LLM com visão)**: gera o **laudo** e os itens do relatório (essencial/recomendado/opcional), usando o template de prompt em `backend/prompts/skin.md`. Além do texto, o agente deve incluir uma seção **`## LOCALIZAÇÃO`** com frases em inglês; o backend extrai essas frases para formar `point_queries` (com fallback caso a seção esteja ausente).
-- **Fal AI Moondream 3 / point**: recebe a **imagem** e uma `point_query`, retornando pontos com **`x` e `y` normalizados (0–1)**. O backend agrega tudo em `points_by_query`.
-- **Fal AI Moondream 3 / detect (opcional / endpoints dedicados)**: retorna **bounding boxes** (`x_min..y_max`) para objetos/elementos quando você usa rotas de detecção (`/detect/*`).
+- **Fal AI Moondream 3 / point**: recebe **URL da imagem** + **prompt** (a mesma string da query do laudo) e devolve uma lista de **`points`** com `x` e `y` normalizados (0–1). O `AgentService` limita quantos pontos por query e quantas queries são chamadas (variáveis de ambiente; ver tabela abaixo).
+- **Fal AI Moondream 3 / detect**: modelo configurado em `backend/config.py` para uso futuro ou integrações externas; **não há endpoint REST** `/detect` neste projeto no momento.
 
 ### Tooltips e markers (como o app “junta” LLM + pontos)
 
 - O backend cria uma lista plana de `markers` com: `id`, `x`, `y`, `query`, `description`, `relevance` e `photoshop_technique`.
 - A descrição/técnica vêm do relatório do LLM; já a posição (`x`,`y`) vem do `/point` da Fal. Isso permite renderizar os pontos na imagem com tooltip contextual.
 
-### Endpoint -> Modelo (resumo)
+### Chamadas HTTP vs uso interno da Fal
 
-| Endpoint | Modelo principal | Saída usada no app |
-|----------|-------------------|---------------------|
-| `/api/v1/agent/analyze*` | OpenRouter (LLM com visão) + Fal `/point` | Laudo + pontos/markers |
-| `/api/v1/point/*` | Fal `/point` | Pontos (x,y) e opcional imagem com overlay |
-| `/api/v1/detect/*` | Fal `/detect` | Bounding boxes (x_min..y_max) |
+| O quê | Onde | Modelo / serviço |
+|-------|------|------------------|
+| Laudo + marcadores (fluxo principal) | `POST /api/v1/agent/analyze*` e jobs | OpenRouter + Fal **point** (interno) |
+| Pontos “soltos” via API REST | *Não disponível nesta versão* | — |
+| Detecção com bounding boxes via API REST | *Não disponível nesta versão* | `FAL_MODEL_DETECT` só em config |
 
 ---
 
 ## API
 
-Base URL: `/api/v1`.
+Base URL da API versionada: **`/api/v1`**.  
+Arquivos estáticos de upload: **`/uploads/...`** (montado pelo FastAPI a partir de `storage/uploads`).
+
+### Endpoints expostos
 
 | Recurso | Método | Descrição |
 |--------|--------|-----------|
 | **Agent** | | |
-| `/agent/analyze` | POST | Analisa imagem e retorna laudo + pontos (síncrono). |
-| `/agent/analyze/image` | POST | Como acima, mas retorna também a imagem com pontos em base64. |
-| `/agent/analyze/persist` | POST | Salva upload, analisa e retorna URL da foto + laudo + marcadores. |
-| `/agent/analyze/persist_async` | POST | Salva upload e enfileira análise; retorna `job_id` e `history_id`. |
+| `/agent/analyze` | POST | Analisa a imagem (multipart) e retorna laudo + `point_queries` + `points_by_query` (síncrono). |
+| `/agent/analyze/image` | POST | Igual ao fluxo de análise; responde com **`image_base64` da imagem original enviada** (sem overlay desenhado no servidor) + laudo + `point_queries`. |
+| `/agent/analyze/persist` | POST | Persiste o arquivo, executa análise e retorna `image_url`, laudo, marcadores e `history_id`. |
+| `/agent/analyze/persist_async` | POST | Persiste o arquivo, cria job RQ; resposta **202** com `job_id` e `history_id` (uso pelo frontend). |
 | **Jobs** | | |
-| `/jobs/{job_id}` | GET | Status do job: `queued` \| `processing` \| `done` \| `failed`; se `done`, inclui resultado. |
+| `/jobs/{job_id}` | GET | Status: `queued` \| `processing` \| `done` \| `failed`; em `done`, inclui o payload do resultado. |
 | **Histórico** | | |
-| `/history` | GET | Lista resumos das análises (id, data, preview, status, etc.). |
-| `/history/{entry_id}` | GET | Detalhe de uma análise (laudo, marcadores, pontos, imagem). |
-| **Point** | | |
-| `/point/upload` | POST | Localiza pontos na imagem (upload + query). |
-| `/point/upload/image` | POST | Idem, retorna imagem com pontos desenhados (PNG). |
-| `/point/path` | POST | Localiza pontos em imagem por caminho local (ex.: `images/foto.jpg`). |
-| **Detect** | | |
-| `/detect/upload` | POST | Detecção de objetos por upload + prompt. |
-| `/detect/url` | POST | Detecção por URL da imagem. |
+| `/history` | GET | Lista resumos (query `limit`, padrão 50). |
+| `/history/{entry_id}` | GET | Detalhe completo de um laudo (marcadores, pontos, texto). |
+| `/history/{entry_id}` | DELETE | Remove o registro do histórico (arquivo JSON). |
+
+**Não exposto como REST neste projeto:** não há `/api/v1/point/*` nem `/api/v1/detect/*`. A localização por pontos ocorre **dentro** do serviço do agente, via Fal **Moondream point**.
 
 - **Health check:** `GET /health` → `{"status": "healthy"}`.
-- **Metadados da API:** `GET /api` → mensagem e link para a UI.
+- **Metadados:** `GET /api` → mensagem e referência à UI.
 
-Documentação interativa: **http://localhost:8000/docs** (Swagger UI).
+Documentação interativa (Swagger): **`http://localhost:8000/docs`** (ou a porta mapeada no Docker, ex.: `8100`).
 
 ---
 
@@ -231,14 +232,14 @@ photo-lab/
 │   ├── main.py              # App FastAPI, montagem de rotas e /uploads
 │   ├── config.py            # Variáveis de ambiente e paths
 │   ├── worker.py            # Worker RQ (processa jobs)
-│   ├── routes/              # Rotas da API (agent, jobs, history, point, detect)
-│   ├── services/            # Lógica de negócio (agent, point, detect, history, queue)
+│   ├── routes/              # Rotas da API (agent, jobs, history)
+│   ├── services/            # Lógica (agent, history, queue)
 │   ├── schemas/             # Modelos Pydantic (request/response)
 │   ├── jobs/                # Definição dos jobs RQ (ex.: analyze_persist_job)
 │   ├── prompts/             # Prompts do agente (ex.: skin.md)
-│   ├── uploads/             # Imagens enviadas (persistidas)
-│   ├── history/             # Histórico de análises (JSON)
-│   └── output/              # Saídas auxiliares (agent, point, detect)
+│   ├── storage/uploads/     # Imagens enviadas (persistidas)
+│   ├── storage/history/     # Histórico de análises (JSON)
+│   └── output/              # Saídas auxiliares (se houver)
 ├── frontend/
 │   ├── index.html           # Página única (upload, resultado, histórico)
 │   ├── assets/
@@ -259,11 +260,16 @@ photo-lab/
 
 | Variável | Obrigatória | Descrição |
 |----------|-------------|-----------|
-| `FAL_KEY` | Sim | Chave da API Fal AI (point/detect). |
+| `FAL_KEY` | Sim | Chave Fal AI (usada para **Moondream point** no fluxo do agente). |
 | `OPENROUTER_API_KEY` | Sim | Chave OpenRouter para o agente de análise. |
 | `AGENT_MODEL` | Não | Modelo com visão (padrão: `google/gemini-2.0-flash`). |
 | `REDIS_URL` | Não | URL do Redis (padrão: `redis://localhost:6379/0`). |
 | `PORT` | Não | Porta da API (padrão: 8000). |
 | `FRONTEND_PORT` | Não | Porta do Nginx/frontend (padrão: 8101). |
+| `POINT_QUERY_LIMIT` | Não | Máximo de queries enviadas ao Fal point por análise (padrão: 6). |
+| `POINTS_PER_QUERY_LIMIT` | Não | Máximo de coordenadas mantidas por query (padrão: 2). |
+| `MARKERS_TOTAL_LIMIT` | Não | Teto de marcadores na resposta (padrão: 40). |
+| `FAL_IMAGE_MAX_SIDE` | Não | Lado máximo da imagem enviada ao Fal (px; padrão: 1600). |
+| `FAL_IMAGE_JPEG_QUALITY` | Não | Qualidade JPEG da cópia enviada ao Fal (padrão: 85). |
 
 ---
